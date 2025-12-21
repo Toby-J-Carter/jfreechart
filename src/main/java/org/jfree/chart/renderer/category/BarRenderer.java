@@ -53,26 +53,26 @@ import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.util.Objects;
 
+import org.jfree.chart.api.PublicCloneable;
+import org.jfree.chart.api.RectangleEdge;
 import org.jfree.chart.api.RectangleInsets;
-import org.jfree.chart.legend.LegendItem;
 import org.jfree.chart.axis.CategoryAxis;
 import org.jfree.chart.axis.ValueAxis;
 import org.jfree.chart.entity.EntityCollection;
 import org.jfree.chart.event.RendererChangeEvent;
+import org.jfree.chart.internal.Args;
+import org.jfree.chart.internal.PaintUtils;
+import org.jfree.chart.internal.SerialUtils;
 import org.jfree.chart.labels.CategoryItemLabelGenerator;
 import org.jfree.chart.labels.ItemLabelAnchor;
 import org.jfree.chart.labels.ItemLabelPosition;
+import org.jfree.chart.legend.LegendItem;
 import org.jfree.chart.plot.CategoryPlot;
 import org.jfree.chart.plot.PlotOrientation;
 import org.jfree.chart.plot.PlotRenderingInfo;
 import org.jfree.chart.text.TextUtils;
 import org.jfree.chart.util.GradientPaintTransformer;
-import org.jfree.chart.api.RectangleEdge;
 import org.jfree.chart.util.StandardGradientPaintTransformer;
-import org.jfree.chart.internal.PaintUtils;
-import org.jfree.chart.internal.Args;
-import org.jfree.chart.api.PublicCloneable;
-import org.jfree.chart.internal.SerialUtils;
 import org.jfree.data.KeyedValues2DItemKey;
 import org.jfree.data.Range;
 import org.jfree.data.category.CategoryDataset;
@@ -864,19 +864,74 @@ public class BarRenderer extends AbstractCategoryItemRenderer
         return result;
     }
 
+    protected Rectangle2D createBar(
+            CategoryPlot plot,
+            ValueAxis rangeAxis,
+            CategoryItemRendererState state,
+            Rectangle2D dataArea,
+            PlotOrientation orientation,
+            double value,
+            double barW0,
+            double[] barL0L1) {
+
+        RectangleEdge edge = plot.getRangeAxisEdge();
+        double transL0 = rangeAxis.valueToJava2D(barL0L1[0], dataArea, edge);
+        double transL1 = rangeAxis.valueToJava2D(barL0L1[1], dataArea, edge);
+
+        boolean positive = (value >= this.base);
+        boolean inverted = rangeAxis.isInverted();
+
+        double barL0 = Math.min(transL0, transL1);
+        double barLength = Math.abs(transL1 - transL0);
+
+        double barLengthAdj = 0.0;
+        if (barLength > 0.0 && barLength < getMinimumBarLength()) {
+            barLengthAdj = getMinimumBarLength() - barLength;
+        }
+
+        double barL0Adj = 0.0;
+
+        if (orientation == PlotOrientation.HORIZONTAL) {
+            if (positive && inverted || !positive && !inverted) {
+                barL0Adj = barLengthAdj;
+            }
+            return new Rectangle2D.Double(
+                    barL0 - barL0Adj, barW0,
+                    barLength + barLengthAdj, state.getBarWidth());
+        } else {
+            if (positive && !inverted || !positive && inverted) {
+                barL0Adj = barLengthAdj;
+            }
+            return new Rectangle2D.Double(
+                    barW0, barL0 - barL0Adj,
+                    state.getBarWidth(), barLength + barLengthAdj);
+        }
+    }
+
+    protected void submitCrosshair(CategoryItemRendererState state,
+            CategoryDataset dataset, CategoryPlot plot,
+            double value, double barW0, double barY,
+            PlotOrientation orientation,
+            int row, int column) {
+        int datasetIndex = plot.indexOf(dataset);
+        updateCrosshairValues(state.getCrosshairState(),
+                dataset.getRowKey(row), dataset.getColumnKey(column),
+                value, datasetIndex, barW0, barY, orientation);
+    }
+
     /**
      * Draws the bar for a single (series, category) data item.
      *
-     * @param g2  the graphics device.
-     * @param state  the renderer state.
-     * @param dataArea  the data area.
-     * @param plot  the plot.
-     * @param domainAxis  the domain axis.
-     * @param rangeAxis  the range axis.
-     * @param dataset  the dataset.
-     * @param row  the row index (zero-based).
-     * @param column  the column index (zero-based).
-     * @param pass  the pass index.
+     * @param g2 the graphics device.
+     * @param state the renderer state.
+     * @param dataArea the data area.
+     * @param plot the plot.
+     * @param domainAxis the domain axis.
+     * @param rangeAxis the range axis.
+     * @param dataset the dataset.
+     * @param row the row index (zero-based).
+     * @param column the column index (zero-based).
+     * @param pass the pass index.
      */
     @Override
     public void drawItem(Graphics2D g2, CategoryItemRendererState state,
@@ -884,112 +939,85 @@ public class BarRenderer extends AbstractCategoryItemRenderer
             ValueAxis rangeAxis, CategoryDataset dataset, int row,
             int column, int pass) {
 
-        // nothing is drawn if the row index is not included in the list with
-        // the indices of the visible rows...
         int visibleRow = state.getVisibleSeriesIndex(row);
         if (visibleRow < 0) {
             return;
         }
-        // nothing is drawn for null values...
+
         Number dataValue = dataset.getValue(row, column);
         if (dataValue == null) {
             return;
         }
 
         final double value = dataValue.doubleValue();
+
+        double base = this.base;
+        double minBarLength = getMinimumBarLength();
+        boolean shadowsVisible = getShadowsVisible();
+        BarPainter painter = this.barPainter;
+
         PlotOrientation orientation = plot.getOrientation();
+
         double barW0 = calculateBarW0(plot, orientation, dataArea, domainAxis,
                 state, visibleRow, column);
+
         double[] barL0L1 = calculateBarL0L1(value);
         if (barL0L1 == null) {
-            return;  // the bar is not visible
+            return;
         }
 
-        RectangleEdge edge = plot.getRangeAxisEdge();
-        double transL0 = rangeAxis.valueToJava2D(barL0L1[0], dataArea, edge);
-        double transL1 = rangeAxis.valueToJava2D(barL0L1[1], dataArea, edge);
+        Rectangle2D bar = createBar(
+                plot, rangeAxis, state, dataArea,
+                orientation, value, barW0, barL0L1);
 
-        // in the following code, barL0 is (in Java2D coordinates) the LEFT
-        // end of the bar for a horizontal bar chart, and the TOP end of the
-        // bar for a vertical bar chart.  Whether this is the BASE of the bar
-        // or not depends also on (a) whether the data value is 'negative'
-        // relative to the base value and (b) whether the range axis is
-        // inverted.  This only matters if/when we apply the minimumBarLength
-        // attribute, because we should extend the non-base end of the bar
-        boolean positive = (value >= this.base);
+        boolean positive = (value >= base);
         boolean inverted = rangeAxis.isInverted();
-        double barL0 = Math.min(transL0, transL1);
-        double barLength = Math.abs(transL1 - transL0);
-        double barLengthAdj = 0.0;
-        if (barLength > 0.0 && barLength < getMinimumBarLength()) {
-            barLengthAdj = getMinimumBarLength() - barLength;
-        }
-        double barL0Adj = 0.0;
         RectangleEdge barBase;
+
         if (orientation == PlotOrientation.HORIZONTAL) {
             if (positive && inverted || !positive && !inverted) {
-                barL0Adj = barLengthAdj;
                 barBase = RectangleEdge.RIGHT;
-            }
-            else {
+            } else {
                 barBase = RectangleEdge.LEFT;
             }
-        }
-        else {
+        } else {
             if (positive && !inverted || !positive && inverted) {
-                barL0Adj = barLengthAdj;
                 barBase = RectangleEdge.BOTTOM;
-            }
-            else {
+            } else {
                 barBase = RectangleEdge.TOP;
             }
         }
 
-        // draw the bar...
-        Rectangle2D bar;
-        if (orientation == PlotOrientation.HORIZONTAL) {
-            bar = new Rectangle2D.Double(barL0 - barL0Adj, barW0,
-                    barLength + barLengthAdj, state.getBarWidth());
-        }
-        else {
-            bar = new Rectangle2D.Double(barW0, barL0 - barL0Adj,
-                    state.getBarWidth(), barLength + barLengthAdj);
-        }
         if (state.getElementHinting()) {
             KeyedValues2DItemKey key = new KeyedValues2DItemKey(
                     dataset.getRowKey(row), dataset.getColumnKey(column));
             beginElementGroup(g2, key);
         }
-        if (getShadowsVisible()) {
-            this.barPainter.paintBarShadow(g2, this, row, column, bar, barBase,
-                true);
+
+        if (shadowsVisible) {
+            painter.paintBarShadow(g2, this, row, column, bar, barBase, true);
         }
-        this.barPainter.paintBar(g2, this, row, column, bar, barBase);
+        painter.paintBar(g2, this, row, column, bar, barBase);
+
         if (state.getElementHinting()) {
             endElementGroup(g2);
         }
-        
-        CategoryItemLabelGenerator generator = getItemLabelGenerator(row,
-                column);
+
+        CategoryItemLabelGenerator generator
+                = getItemLabelGenerator(row, column);
         if (generator != null && isItemLabelVisible(row, column)) {
             drawItemLabel(g2, dataset, row, column, plot, generator, bar,
                     (value < 0.0));
         }
 
-        // submit the current data point as a crosshair candidate
-        int datasetIndex = plot.indexOf(dataset);
-        updateCrosshairValues(state.getCrosshairState(),
-                dataset.getRowKey(row), dataset.getColumnKey(column), value,
-                datasetIndex, barW0, barL0, orientation);
+        submitCrosshair(state, dataset, plot, value, barW0, bar.getY(), orientation, row, column);
 
-        // add an item entity, if this information is being collected
         EntityCollection entities = state.getEntityCollection();
         if (entities != null) {
             addItemEntity(entities, dataset, row, column, bar);
         }
-
     }
-    
+
     /**
      * Calculates the available space for each series.
      *
