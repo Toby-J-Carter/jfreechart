@@ -1,10 +1,5 @@
 package org.jfree.chart.swing;
 
-public class CrosshairHelpers {
-
-}
-package org.jfree.chart.swing;
-
 import org.jfree.chart.api.RectangleAnchor;
 import org.jfree.chart.api.RectangleInsets;
 import org.jfree.chart.plot.Crosshair;
